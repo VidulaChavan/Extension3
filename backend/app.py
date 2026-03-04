@@ -1,6 +1,6 @@
 """
 PhishGuard Flask API
-Main backend server for ML predictions
+Clean ML + Trusted Domain Architecture
 """
 
 from flask import Flask, request, jsonify
@@ -25,52 +25,50 @@ logger = logging.getLogger(__name__)
 
 # Initialize Flask app
 app = Flask(__name__)
-CORS(app)  # Enable CORS for extension
+CORS(app)
 
 # Load config
 config = get_config()
 
-# Initialize models and extractors
-url_model = None
-email_model = None
+# Initialize loaders instead of raw models
+url_loader = ModelLoader('url')
+email_loader = ModelLoader('email')
+
 url_extractor = URLFeatureExtractor()
 email_extractor = EmailFeatureExtractor()
 
+
 def load_models():
-    """Load both ML models at startup"""
-    global url_model, email_model
-    
+    """Load ML models at startup"""
     try:
         logger.info("Loading URL model...")
-        url_loader = ModelLoader('url')
-        url_model = url_loader.load_model()
+        url_loader.load_model()
         logger.info("✅ URL model loaded successfully")
     except Exception as e:
         logger.error(f"❌ Failed to load URL model: {e}")
-        url_model = None
-    
+
     try:
         logger.info("Loading Email model...")
-        email_loader = ModelLoader('email')
-        email_model = email_loader.load_model()
+        email_loader.load_model()
         logger.info("✅ Email model loaded successfully")
     except Exception as e:
         logger.error(f"❌ Failed to load Email model: {e}")
-        email_model = None
+
 
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint"""
     response = HealthResponse(
         status='healthy',
-        version='1.0.0',
+        version='2.0.0',
         models_loaded={
-            'url': url_model is not None,
-            'email': email_model is not None
+            'url': url_loader.is_model_loaded(),
+            'email': email_loader.is_model_loaded()
         },
         timestamp=time.strftime('%Y-%m-%d %H:%M:%S')
     )
     return jsonify(response.dict()), 200
+
 
 @app.route('/predict/url', methods=['POST'])
 def predict_url():
@@ -83,66 +81,46 @@ def predict_url():
     }
     """
     start_time = time.time()
-    
+
     try:
         # Parse request
         data = request.get_json()
         req = URLPredictRequest(**data)
-        
-        # Check if model is loaded
-        if url_model is None:
+
+        if not url_loader.is_model_loaded():
             return jsonify(ErrorResponse(
                 error="Model not loaded",
-                detail="URL model is not available. Please train the model first.",
+                detail="URL model not available.",
                 status_code=503
             ).dict()), 503
-        
-        # Extract features (matching your frontend)
+
+        # Extract normalized features
         features = url_extractor.extract_features_array(
-            req.url, 
-            req.page_text, 
+            req.url,
+            req.page_text,
             req.links_count
         )
-        features_dict = url_extractor.extract_features(
-            req.url, 
-            req.page_text, 
-            req.links_count
-        )
-        
-        # Make prediction
-        features_2d = features.reshape(1, -1)
-        probability = url_model.predict_proba(features_2d)[0][1]
-        prediction = url_model.predict(features_2d)[0]
-        
-        # Calculate risk score
-        risk_score = probability * 100
-        
-        # Determine risk level (matching your contentScript.js)
-        if risk_score <= 30:
-            risk_level = 'Safe'
-        elif risk_score <= 60:
-            risk_level = 'Suspicious'
-        else:
-            risk_level = 'Dangerous'
-        
+
+        # 🔥 Use ModelLoader for prediction (scaler + trusted logic)
+        result = url_loader.predict(features, url=req.url)
+
         response = {
             'url': req.url,
-            'probability': float(probability),
-            'risk_score': float(risk_score),
-            'risk_level': risk_level,
-            'prediction': int(prediction),
-            'is_phishing': bool(prediction == 1),
+            **result,
             'processing_time_ms': (time.time() - start_time) * 1000
         }
-        
-        # Include features if requested
+
         if req.return_features:
             response['features'] = features_dict
             response['feature_names'] = url_extractor.get_feature_names()
-        
-        logger.info(f"URL prediction: {req.url[:50]}... -> {risk_level} ({risk_score:.2f})")
+
+        logger.info(
+            f"URL prediction: {req.url[:50]} -> "
+            f"{response['risk_level']} ({response['risk_score']:.2f})"
+        )
+
         return jsonify(response), 200
-        
+
     except Exception as e:
         logger.error(f"Error in URL prediction: {e}")
         return jsonify(ErrorResponse(
@@ -150,6 +128,7 @@ def predict_url():
             detail=str(e),
             status_code=400
         ).dict()), 400
+
 
 @app.route('/predict/email', methods=['POST'])
 def predict_email():
@@ -162,62 +141,42 @@ def predict_email():
     }
     """
     start_time = time.time()
-    
+
     try:
         # Parse request
         data = request.get_json()
         req = EmailPredictRequest(**data)
-        
-        # Check if model is loaded
-        if email_model is None:
+
+        if not email_loader.is_model_loaded():
             return jsonify(ErrorResponse(
                 error="Model not loaded",
-                detail="Email model is not available. Please train the model first.",
+                detail="Email model not available.",
                 status_code=503
             ).dict()), 503
-        
-        # Extract features (matching your contentScript.js)
+
         features = email_extractor.extract_features_array(
             req.subject, req.body, req.links
         )
-        features_dict = email_extractor.extract_features(
-            req.subject, req.body, req.links
-        )
-        
-        # Make prediction
-        features_2d = features.reshape(1, -1)
-        probability = email_model.predict_proba(features_2d)[0][1]
-        prediction = email_model.predict(features_2d)[0]
-        
-        # Calculate risk score
-        risk_score = probability * 100
-        
-        # Determine risk level (matching your contentScript.js)
-        if risk_score <= 30:
-            risk_level = 'Safe'
-        elif risk_score <= 60:
-            risk_level = 'Suspicious'
-        else:
-            risk_level = 'Dangerous'
-        
+
+        result = email_loader.predict(features)
+
         response = {
             'subject': req.subject[:50] + '...' if len(req.subject) > 50 else req.subject,
-            'probability': float(probability),
-            'risk_score': float(risk_score),
-            'risk_level': risk_level,
-            'prediction': int(prediction),
-            'is_phishing': bool(prediction == 1),
+            **result,
             'processing_time_ms': (time.time() - start_time) * 1000
         }
-        
-        # Include features if requested
+
         if req.return_features:
             response['features'] = features_dict
             response['feature_names'] = email_extractor.get_feature_names()
-        
-        logger.info(f"Email prediction -> {risk_level} ({risk_score:.2f})")
+
+        logger.info(
+            f"Email prediction -> "
+            f"{response['risk_level']} ({response['risk_score']:.2f})"
+        )
+
         return jsonify(response), 200
-        
+
     except Exception as e:
         logger.error(f"Error in Email prediction: {e}")
         return jsonify(ErrorResponse(
@@ -270,7 +229,7 @@ def extract_email_features_only():
 def get_info():
     """Get model and feature information"""
     return jsonify({
-        'version': '1.0.0',
+        'version': '2.0.0',
         'url_features': url_extractor.get_feature_names(),
         'email_features': email_extractor.get_feature_names(),
         'risk_thresholds': {
@@ -279,12 +238,13 @@ def get_info():
             'dangerous': 100
         },
         'models_loaded': {
-            'url': url_model is not None,
-            'email': email_model is not None
+            'url': url_loader.is_model_loaded(),
+            'email': email_loader.is_model_loaded()
         }
     }), 200
 
-# Load models when starting the app
+
+# Load models at startup
 load_models()
 
 if __name__ == '__main__':
