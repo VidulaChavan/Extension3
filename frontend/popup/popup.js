@@ -26,7 +26,17 @@ document.addEventListener("DOMContentLoaded", () => {
     apiStatus: document.getElementById("apiStatus"),
     apiStatusText: document.getElementById("apiStatusText"),
   };
+// ===============================
+// Risk Score Breakdown Button
+// ===============================
 
+document.getElementById("breakdownBtn")?.addEventListener("click", () => {
+  console.log("📊 Breakdown button clicked");
+
+  chrome.tabs.create({
+    url: chrome.runtime.getURL("frontend/popup/breakdown.html")
+  });
+});
   // ===============================
   // Close Popup
   // ===============================
