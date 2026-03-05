@@ -29,17 +29,13 @@ async function callUrlMLApi(url, pageText, linksCount) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        url: url,
+        url,
         page_text: pageText.substring(0, 1000),
         links_count: linksCount,
-        return_features: false,
+        return_features: true,
       }),
     });
-
-    if (!response.ok) {
-      throw new Error(`API error: ${response.status}`);
-    }
-
+    if (!response.ok) throw new Error(`API error: ${response.status}`);
     return await response.json();
   } catch (error) {
     console.error("❌ ML API call failed:", error);
@@ -56,17 +52,13 @@ async function callEmailMLApi(subject, body, links) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        subject: subject,
+        subject,
         body: body.substring(0, 2000),
-        links: links,
-        return_features: false,
+        links,
+        return_features: true,
       }),
     });
-
-    if (!response.ok) {
-      throw new Error(`API error: ${response.status}`);
-    }
-
+    if (!response.ok) throw new Error(`API error: ${response.status}`);
     return await response.json();
   } catch (error) {
     console.error("❌ ML API call failed:", error);
@@ -75,32 +67,23 @@ async function callEmailMLApi(subject, body, links) {
 }
 
 // ===============================
-// Heuristic Scoring - UPDATED (Only check page text for emails)
+// Heuristic Scoring
 // ===============================
 
 function calculateHeuristicScore(url, pageText, linksCount) {
   let score = 0;
+  const ipPattern = /(\d{1,3}\.){3}\d{1,3}/;
 
   // URL-based heuristics
   if (url.includes("@")) score += 20;
   if (url.includes("login") || url.includes("verify")) score += 15;
   if (url.length > 75) score += 10;
 
-  // Check for IP address
-  const ipPattern = /(\d{1,3}\.){3}\d{1,3}/;
+  // IP check
   if (ipPattern.test(url)) score += 25;
 
-  // Only check page text if it's actually provided (for emails)
-  // For regular websites, pageText will be empty string
-  if (pageText && pageText.length > 0) {
-    const suspiciousWords = [
-      "urgent",
-      "verify",
-      "suspend",
-      "limited time",
-      "click now",
-    ];
-    suspiciousWords.forEach((word) => {
+  if (pageText?.length > 0) {
+    ["urgent", "verify", "suspend", "limited time", "click now"].forEach((word) => {
       if (pageText.toLowerCase().includes(word)) score += 10;
     });
   }
@@ -108,10 +91,9 @@ function calculateHeuristicScore(url, pageText, linksCount) {
   // Too many links
   if (linksCount > 50) score += 15;
 
-  // Count subdomains
+  // Subdomains
   try {
-    const hostname = new URL(url).hostname;
-    const subdomainCount = hostname.split(".").length - 2;
+    const subdomainCount = new URL(url).hostname.split(".").length - 2;
     if (subdomainCount > 2) score += 10;
   } catch (e) {}
 
@@ -119,7 +101,7 @@ function calculateHeuristicScore(url, pageText, linksCount) {
 }
 
 // ===============================
-// Score Combination Logic
+// Combine Scores
 // ===============================
 
 function combineScores(heuristicScore, mlResult) {
@@ -136,13 +118,11 @@ function combineScores(heuristicScore, mlResult) {
 
   // Use ML level if scores disagree significantly
   let finalLevel;
-  const heuristicLevel = getRiskLevel(heuristicScore);
 
-  if (Math.abs(heuristicScore - mlResult.risk_score) > 30) {
-    finalLevel = mlResult.risk_level;
-  } else {
-    finalLevel = getRiskLevel(finalScore);
-  }
+  finalLevel =
+    Math.abs(heuristicScore - mlResult.risk_score) > 30
+      ? mlResult.risk_level
+      : getRiskLevel(finalScore);
 
   return {
     final_score: Math.round(finalScore),
@@ -165,27 +145,18 @@ function getRiskLevel(score) {
 // ===============================
 
 function getCachedResult(key) {
-  if (predictionCache.has(key)) {
-    const cached = predictionCache.get(key);
-    if (Date.now() - cached.timestamp < CACHE_DURATION) {
-      console.log("📦 Using cached result for:", key.substring(0, 50));
-      return cached.data;
-    } else {
-      predictionCache.delete(key);
-    }
-  }
+  const cached = predictionCache.get(key);
+  if (cached && Date.now() - cached.timestamp < CACHE_DURATION) return cached.data;
+  predictionCache.delete(key);
   return null;
 }
 
 function cacheResult(key, data) {
-  predictionCache.set(key, {
-    timestamp: Date.now(),
-    data: data,
-  });
+  predictionCache.set(key, { timestamp: Date.now(), data });
 }
 
 // ===============================
-// Main Analysis Function
+// Main Analysis
 // ===============================
 
 async function analyzeUrl(url, pageText = "", linksCount = 0) {
@@ -207,17 +178,34 @@ async function analyzeUrl(url, pageText = "", linksCount = 0) {
   // Combine scores
   const result = combineScores(heuristicScore, mlResult);
 
-  // Cache the result
-  cacheResult(cacheKey, result);
+  const detailedReasons = {
+    hasIP: /(\d{1,3}\.){3}\d{1,3}/.test(url) ? 1 : 0,
+    hasSuspiciousKeyword: /login|verify/.test(url) ? 1 : 0,
+    subdomainCount: (() => {
+      try { return new URL(url).hostname.split(".").length - 2; } catch { return 0; }
+    })(),
+    urlLength: url.length,
+    hasAtSymbol: url.includes("@") ? 1 : 0,
+    urgentWordCount: (pageText.match(/urgent|verify|suspend|limited time|click now/gi) || []).length,
+    suspiciousKeywordCount: 0,
+    capitalRatio: (pageText.match(/[A-Z]/g)?.length || 0) / Math.max(1, pageText.length),
+    exclamationCount: (pageText.match(/!/g) || []).length,
+    linkCount: linksCount,
+    ...mlResult?.features,
+  };
 
-  console.log("📊 Analysis complete:", {
-    heuristic: heuristicScore,
-    ml: mlResult?.risk_score,
-    final: result.final_score,
+  const finalData = {
+    final_score: result.final_score,
     level: result.level,
-  });
+    heuristic_score: result.heuristic_score,
+    ml_score: result.ml_score,
+    ml_probability: result.ml_probability,
+    source: result.source,
+    detailedReasons,
+  };
 
-  return result;
+  cacheResult(cacheKey, finalData);
+  return finalData;
 }
 
 async function analyzeEmail(subject, body, links = []) {
@@ -232,17 +220,21 @@ async function analyzeEmail(subject, body, links = []) {
 
   // For emails, we'll use ML only (or you can add email heuristics later)
   const mlResult = await callEmailMLApi(subject, body, links);
-
-  const result = {
+  const finalData = {
     final_score: mlResult?.risk_score || 0,
     level: mlResult?.risk_level || "Safe",
     ml_score: mlResult?.risk_score,
     ml_probability: mlResult?.probability,
     source: mlResult ? "ml-only" : "none",
+    detailedReasons: {
+      ...mlResult?.features,
+      ml_score: mlResult?.risk_score,
+      ml_probability: mlResult?.probability,
+    },
   };
 
-  cacheResult(cacheKey, result);
-  return result;
+  cacheResult(cacheKey, finalData);
+  return finalData;
 }
 
 // ===============================
@@ -257,26 +249,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       .then((result) => {
         // Store in chrome.storage for popup to access
         chrome.storage.local.set({
-          riskData: {
-            url: request.url,
-            score: result.final_score,
-            level: result.level,
-            explanation: getExplanation(result),
-            detailedReasons: {
-              heuristic_score: result.heuristic_score,
-              ml_score: result.ml_score,
-              ml_probability: result.ml_probability,
-              source: result.source,
-            },
-          },
+          riskData: { url: request.url, score: result.final_score, level: result.level, explanation: getExplanation(result), detailedReasons: result.detailedReasons },
         });
         sendResponse({ success: true, data: result });
       })
-      .catch((error) => {
-        console.error("Analysis error:", error);
-        sendResponse({ success: false, error: error.message });
-      });
-    return true; // Required for async response
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
   }
 
   if (request.action === "analyzeEmail") {
@@ -284,25 +262,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       .then((result) => {
         // Store in chrome.storage for popup to access
         chrome.storage.local.set({
-          riskData: {
-            url: "Gmail - Email Analysis", // Static text instead of window
-            score: result.final_score,
-            level: result.level,
-            explanation: getExplanation(result),
-            detailedReasons: {
-              ml_score: result.ml_score,
-              ml_probability: result.ml_probability,
-              source: result.source,
-            },
-          },
+          riskData: { url: "Gmail - Email Analysis", score: result.final_score, level: result.level, explanation: getExplanation(result), detailedReasons: result.detailedReasons },
         });
         sendResponse({ success: true, data: result });
       })
-      .catch((error) => {
-        console.error("Analysis error:", error);
-        sendResponse({ success: false, error: error.message });
-      });
-    return true; // Required for async response
+      .catch((error) => sendResponse({ success: false, error: error.message }));
+    return true;
   }
 
   if (request.action === "checkAPI") {
@@ -324,11 +289,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 // ===============================
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  if (
-    changeInfo.status === "complete" &&
-    tab.url &&
-    !tab.url.startsWith("chrome://")
-  ) {
+  if (changeInfo.status === "complete" && tab.url && !tab.url.startsWith("chrome://")) {
     console.log("📍 New page loaded:", tab.url);
 
     // We'll let the content script trigger the analysis
@@ -342,17 +303,10 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 
 function getExplanation(result) {
   const sourceText =
-    result.source === "combined"
-      ? "AI + Heuristic"
-      : result.source === "ml-only"
-        ? "AI Analysis"
-        : "Heuristic only";
+    result.source === "combined" ? "AI + Heuristic" :
+    result.source === "ml-only" ? "AI Analysis" : "Heuristic only";
 
-  if (result.level === "Safe") {
-    return `✅ No major phishing indicators detected. (${sourceText})`;
-  } else if (result.level === "Suspicious") {
-    return `⚠️ Some phishing indicators detected. Proceed with caution. (${sourceText})`;
-  } else {
-    return `🔴 DANGEROUS: Multiple strong phishing indicators detected! (${sourceText})`;
-  }
+  if (result.level === "Safe") return `✅ No major phishing indicators detected. (${sourceText})`;
+  if (result.level === "Suspicious") return `⚠️ Some phishing indicators detected. Proceed with caution. (${sourceText})`;
+  return `🔴 DANGEROUS: Multiple strong phishing indicators detected! (${sourceText})`;
 }

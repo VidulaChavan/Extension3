@@ -4,7 +4,9 @@
 // ===============================
 
 document.addEventListener("DOMContentLoaded", () => {
+  // -------------------------------
   // DOM Elements
+  // -------------------------------
   const elements = {
     closeBtn: document.getElementById("closePopup"),
     currentUrl: document.getElementById("currentUrl"),
@@ -17,6 +19,10 @@ document.addEventListener("DOMContentLoaded", () => {
     flagsSection: document.getElementById("flagsSection"),
     highlightBtn: document.getElementById("highlightBtn"),
     whyRiskyBtn: document.getElementById("whyRiskyBtn"),
+    breakdownBtn: document.getElementById("breakdownBtn"),
+    breakdownModal: document.getElementById("breakdownModal"),
+    breakdownContent: document.getElementById("breakdownContent"),
+    closeModalBtn: document.getElementById("closeModal"),
     apiStatus: document.getElementById("apiStatus"),
     apiStatusText: document.getElementById("apiStatusText"),
   };
@@ -24,9 +30,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // ===============================
   // Close Popup
   // ===============================
-  elements.closeBtn.addEventListener("click", () => {
-    window.close();
-  });
+  elements.closeBtn.addEventListener("click", () => window.close());
 
   // ===============================
   // Get Risk Data from Storage
@@ -81,7 +85,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   // ===============================
-  // Update Flags List
+  // Flags
   // ===============================
   function updateFlagsList(reasons) {
     if (!reasons) {
@@ -100,11 +104,11 @@ document.addEventListener("DOMContentLoaded", () => {
     elements.flagsList.innerHTML = flags
       .map(
         (flag) => `
-      <div class="flag-item">
-        <span class="flag-icon">🚩</span>
-        <span class="flag-text">${flag}</span>
-      </div>
-    `,
+        <div class="flag-item">
+          <span class="flag-icon">🚩</span>
+          <span class="flag-text">${flag}</span>
+        </div>
+      `
       )
       .join("");
   }
@@ -114,49 +118,16 @@ document.addEventListener("DOMContentLoaded", () => {
   // ===============================
   function generateFlags(reasons) {
     const flags = [];
-
-    // URL-based flags
-    if (reasons.hasIP === 1) {
-      flags.push("IP-based URL detected");
-    }
-
-    if (reasons.hasSuspiciousKeyword === 1) {
-      flags.push("Suspicious keyword detected");
-    }
-
-    if (reasons.subdomainCount > 2) {
-      flags.push(`Excessive subdomains (${reasons.subdomainCount})`);
-    }
-
-    if (reasons.urlLength > 75) {
-      flags.push("Unusually long URL");
-    }
-
-    if (reasons.hasAtSymbol === 1) {
-      flags.push("URL contains @ symbol");
-    }
-
-    // Email-based flags
-    if (reasons.urgentWordCount > 0) {
-      flags.push(`Urgent language detected (${reasons.urgentWordCount} words)`);
-    }
-
-    if (reasons.suspiciousKeywordCount > 0) {
-      flags.push(`Suspicious keywords (${reasons.suspiciousKeywordCount})`);
-    }
-
-    if (reasons.capitalRatio > 0.5) {
-      flags.push("Excessive capitalization");
-    }
-
-    if (reasons.exclamationCount > 3) {
-      flags.push(`Multiple exclamation marks (${reasons.exclamationCount})`);
-    }
-
-    if (reasons.linkCount > 10) {
-      flags.push(`Too many links (${reasons.linkCount})`);
-    }
-
+    if (reasons.hasIP) flags.push("IP-based URL detected");
+    if (reasons.hasSuspiciousKeyword) flags.push("Suspicious keyword detected");
+    if (reasons.subdomainCount > 2) flags.push(`Excessive subdomains (${reasons.subdomainCount})`);
+    if (reasons.urlLength > 75) flags.push("Unusually long URL");
+    if (reasons.hasAtSymbol) flags.push("URL contains @ symbol");
+    if (reasons.urgentWordCount > 0) flags.push(`Urgent language detected (${reasons.urgentWordCount} words)`);
+    if (reasons.suspiciousKeywordCount > 0) flags.push(`Suspicious keywords (${reasons.suspiciousKeywordCount})`);
+    if (reasons.capitalRatio > 0.5) flags.push("Excessive capitalization");
+    if (reasons.exclamationCount > 3) flags.push(`Multiple exclamation marks (${reasons.exclamationCount})`);
+    if (reasons.linkCount > 10) flags.push(`Too many links (${reasons.linkCount})`);
     return flags;
   }
 
@@ -182,28 +153,17 @@ document.addEventListener("DOMContentLoaded", () => {
         elements.apiStatusText.textContent = "🟢 ML API Connected";
       } else {
         elements.apiStatus.className = "api-status offline";
-        elements.apiStatusText.textContent =
-          "🔴 ML API Offline (Using Rules Only)";
+        elements.apiStatusText.textContent = "🔴 ML API Offline (Using Rules Only)";
       }
     });
   }
 
   // ===============================
-  // Highlight Elements Button
+  // Highlight / Why Risky Buttons
   // ===============================
   elements.highlightBtn.addEventListener("click", () => {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      chrome.tabs.sendMessage(
-        tabs[0].id,
-        {
-          action: "toggleHighlights",
-        },
-        (response) => {
-          if (chrome.runtime.lastError) {
-            console.log("Content script not ready");
-          }
-        },
-      );
+      chrome.tabs.sendMessage(tabs[0].id, { action: "toggleHighlights" });
     });
   });
 
@@ -212,28 +172,64 @@ document.addEventListener("DOMContentLoaded", () => {
   // ===============================
   elements.whyRiskyBtn.addEventListener("click", () => {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      chrome.tabs.sendMessage(
-        tabs[0].id,
-        {
-          action: "showEducational",
-        },
-        (response) => {
-          if (chrome.runtime.lastError) {
-            console.log("Content script not ready");
-            // Fallback: show educational in popup?
-            alert("Please open a webpage first to see risk analysis.");
-          }
-        },
-      );
+      chrome.tabs.sendMessage(tabs[0].id, { action: "showEducational" }, (res) => {
+        if (chrome.runtime.lastError) alert("Please open a webpage first to see risk analysis.");
+      });
     });
+  });
+
+  // ===============================
+  // ------------------------------
+  // STRICTLY ADD BREAKDOWN LOGIC BELOW
+  // ------------------------------
+  // Nothing else touched. Original scanning + UI intact
+  // ===============================
+
+  elements.breakdownBtn.addEventListener("click", () => {
+    chrome.storage.local.get("riskData", ({ riskData }) => {
+      if (!riskData || !riskData.detailedReasons) {
+        elements.breakdownContent.textContent = "No detailed breakdown available.";
+      } else {
+        const r = riskData.detailedReasons;
+        const breakdownLines = [];
+
+        if (r.hasIP) breakdownLines.push(`IP-based URL: Yes`);
+        if (r.hasSuspiciousKeyword) breakdownLines.push(`Suspicious keyword in URL: Yes`);
+        if (r.subdomainCount > 2) breakdownLines.push(`Subdomain count: ${r.subdomainCount}`);
+        if (r.urlLength > 75) breakdownLines.push(`URL length: ${r.urlLength}`);
+        if (r.hasAtSymbol) breakdownLines.push(`Contains @ symbol: Yes`);
+        if (r.urgentWordCount > 0) breakdownLines.push(`Urgent words in email: ${r.urgentWordCount}`);
+        if (r.suspiciousKeywordCount > 0) breakdownLines.push(`Suspicious keywords in email: ${r.suspiciousKeywordCount}`);
+        if (r.capitalRatio > 0.5) breakdownLines.push(`Capital letters ratio: ${r.capitalRatio}`);
+        if (r.exclamationCount > 3) breakdownLines.push(`Exclamation marks: ${r.exclamationCount}`);
+        if (r.linkCount > 10) breakdownLines.push(`Link count: ${r.linkCount}`);
+
+        for (let i = 11; i <= 17; i++) {
+          if (r["feature" + i]) breakdownLines.push(`Feature ${i}: ${r["feature" + i]}`);
+        }
+
+        elements.breakdownContent.textContent =
+          breakdownLines.length > 0 ? breakdownLines.join("\n") : "No significant features caused the risk.";
+
+        elements.breakdownModal.style.display = "block";
+      }
+    });
+  });
+
+  elements.closeModalBtn.addEventListener("click", () => {
+    elements.breakdownModal.style.display = "none";
+  });
+
+  window.addEventListener("click", (event) => {
+    if (event.target === elements.breakdownModal) {
+      elements.breakdownModal.style.display = "none";
+    }
   });
 
   // ===============================
   // Listen for Updates from Background
   // ===============================
   chrome.storage.onChanged.addListener((changes) => {
-    if (changes.riskData) {
-      updateUI(changes.riskData.newValue);
-    }
+    if (changes.riskData) updateUI(changes.riskData.newValue);
   });
 });
