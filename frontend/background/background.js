@@ -101,6 +101,61 @@ function calculateHeuristicScore(url, pageText, linksCount) {
 }
 
 // ===============================
+// Email Heuristic Scoring
+// ===============================
+
+function calculateEmailHeuristicScore(subject, body, links) {
+
+  const text = (subject + " " + body).toLowerCase();
+
+  let score = 0;
+
+  function countOccurrences(text, word) {
+    const regex = new RegExp(`\\b${word}\\b`, "gi");
+    const matches = text.match(regex);
+    return matches ? matches.length : 0;
+  }
+
+  const urgentWords = ["urgent", "immediately", "action required", "verify", "suspend"];
+  const suspiciousWords = ["password", "login", "account", "bank", "security"];
+
+  let urgentWordCount = 0;
+  let suspiciousKeywordCount = 0;
+
+  urgentWords.forEach(word => {
+    const count = countOccurrences(text, word);
+    urgentWordCount += count;
+  });
+
+  suspiciousWords.forEach(word => {
+    const count = countOccurrences(text, word);
+    suspiciousKeywordCount += count;
+  });
+
+  score += urgentWordCount * 10;
+  score += suspiciousKeywordCount * 10;
+
+  const capitalLetters = (body.match(/[A-Z]/g) || []).length;
+  const capitalRatio = capitalLetters / Math.max(body.length, 1);
+
+  if (capitalRatio > 0.5) score += 10;
+
+  const exclamationCount = (body.match(/!/g) || []).length;
+  if (exclamationCount > 3) score += 10;
+
+  const linkCount = links.length;
+  if (linkCount > 10) score += 10;
+
+  return {
+    score: Math.min(score, 100),
+    urgentWordCount,
+    suspiciousKeywordCount,
+    capitalRatio,
+    exclamationCount,
+    linkCount
+  };
+}
+// ===============================
 // Combine Scores
 // ===============================
 
@@ -209,31 +264,65 @@ async function analyzeUrl(url, pageText = "", linksCount = 0) {
 }
 
 async function analyzeEmail(subject, body, links = []) {
+
   console.log("🔍 Analyzing Email");
 
-  // Create cache key (simplified - just use subject + first 100 chars)
-  const cacheKey = `email:${subject}:${body.substring(0, 100)}`;
+  const cacheKey = `email:${subject}:${body.substring(0,100)}`;
 
-  // Check cache
   const cached = getCachedResult(cacheKey);
   if (cached) return cached;
 
-  // For emails, we'll use ML only (or you can add email heuristics later)
+  // Email heuristic scoring
+  const heuristics = calculateEmailHeuristicScore(subject, body, links);
+  const heuristicScore = heuristics.score;
+
+  // ML prediction
   const mlResult = await callEmailMLApi(subject, body, links);
+
+  let finalScore;
+  let level;
+
+  if (!mlResult) {
+
+    finalScore = heuristicScore;
+    level = getRiskLevel(finalScore);
+
+  } else {
+
+    finalScore = heuristicScore * 0.4 + mlResult.risk_score * 0.6;
+    level = getRiskLevel(finalScore);
+
+  }
+
   const finalData = {
-    final_score: mlResult?.risk_score || 0,
-    level: mlResult?.risk_level || "Safe",
+
+    final_score: Math.round(finalScore),
+
+    level: level,
+
+    heuristic_score: heuristicScore,
+
     ml_score: mlResult?.risk_score,
+
     ml_probability: mlResult?.probability,
-    source: mlResult ? "ml-only" : "none",
+
+    source: mlResult ? "combined" : "heuristic-only",
+
     detailedReasons: {
-      ...mlResult?.features,
-      ml_score: mlResult?.risk_score,
-      ml_probability: mlResult?.probability,
-    },
+
+      urgentWordCount: heuristics.urgentWordCount,
+      suspiciousKeywordCount: heuristics.suspiciousKeywordCount,
+      capitalRatio: heuristics.capitalRatio,
+      exclamationCount: heuristics.exclamationCount,
+      linkCount: heuristics.linkCount,
+
+      ...mlResult?.features
+    }
+
   };
 
   cacheResult(cacheKey, finalData);
+
   return finalData;
 }
 
